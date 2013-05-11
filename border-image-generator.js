@@ -2,32 +2,34 @@
  * Copyright (c) 2010 Kevin Decker (http://www.incaseofstairs.com/)
  * See LICENSE for license information
  */
-$(document).ready(function() {
+ $(document).ready(function() {
     var pathToImage = $("#pathToImage"),
-        editorEl = $("#editorEl"),
-        imageEl = $("#imageEl"),
-        dividers = $(".divider"),
-        sliders = $(".slider"),
-        fillEl = $("#fillCenter"),
-        cssEl = $("#cssEl"),
-        repeat = $(".repeat"),
+    editorEl = $("#editorEl"),
+    imageEl = $("#imageEl"),
+    dividers = $(".divider"),
+    sliders = $(".slider"),
+    fillEl = $("#fillCenter"),
+    cssEl = $("#cssEl"),
+    svgEl = $("#svgEl"),
+    repeat = $(".repeat"),
 
-        validImage = false,
-        naturalSize = {},
+    validImage = false,
+    naturalSize = {},
 
-        state = {
-            src: "",
+    state = {
+        src: "",
 
-            linkBorder: true,
-            borderWidth: [0, 0, 0, 0],
-            imageOffset: [0, 0, 0, 0],
+        linkBorder: true,
+        borderWidth: [0, 0, 0, 0],
+        imageOffset: [0, 0, 0, 0],
 
-            fill: true,
-            setRepat: false,
-            repeat: ["stretch", "stretch"],
+        fill: true,
+        setRepat: false,
+        repeat: ["stretch", "stretch"],
 
-            scaleFactor: 3
-        };
+        scaleFactor: 3,
+        hash: ""
+    };
 
     var sliderMap = {
         imageTop: { array: "imageOffset", index: 0 },
@@ -103,77 +105,184 @@ $(document).ready(function() {
     }
     function updateCSS() {
         var borderImage = "", borderWidthStr = "", style = "",
-            fillStr = state.fill ? " fill" : "",
-            repeatStr = state.setRepeat ? " " + joinValues(state.repeat) : "";
+        fillStr = state.fill ? " fill" : "",
+        repeatStr = state.setRepeat ? " " + joinValues(state.repeat) : "";
 
         if (validImage) {
             var img = "url(" + UserImageCache.getDisplayName() + ")",
-                imageOffset = state.imageOffset,
-                borderWidth = state.linkBorder ? state.imageOffset : state.borderWidth;
+            imageOffset = state.imageOffset,
+            borderWidth = state.linkBorder ? state.imageOffset : state.borderWidth;
 
             borderImage = img + " " + joinValues(imageOffset);
             borderWidthStr = joinValues(borderWidth, "px ") + "px";
             style = "border-style: solid;\n"
-                + "border-width: " + borderWidthStr + ";\n"
-                + "-moz-border-image: " + borderImage + repeatStr + ";\n"
-                + "-webkit-border-image: " + borderImage + repeatStr + ";\n"
-                + "-o-border-image: " + borderImage + repeatStr + ";\n"
-                + "border-image: " + borderImage + fillStr + repeatStr + ";\n";
+            + "border-width: " + borderWidthStr + ";\n"
+            + "-moz-border-image: " + borderImage + repeatStr + ";\n"
+            + "-webkit-border-image: " + borderImage + repeatStr + ";\n"
+            + "-o-border-image: " + borderImage + repeatStr + ";\n"
+            + "border-image: " + borderImage + fillStr + repeatStr + ";\n";
 
             borderImage = "url(" + UserImageCache.getSrc() + ") " + joinValues(imageOffset);
         }
 
         $("#cssEl").html(style)
-                .css("border-width", borderWidthStr)
-                .css("-moz-border-image", borderImage + repeatStr)
-                .css("-webkit-border-image", borderImage + repeatStr)
-                .css("-o-border-image", borderImage + repeatStr)
-                .css("border-image", borderImage + fillStr + repeatStr);
+        .css("border-width", borderWidthStr)
+        .css("-moz-border-image", borderImage + repeatStr)
+        .css("-webkit-border-image", borderImage + repeatStr)
+        .css("-o-border-image", borderImage + repeatStr)
+        .css("border-image", borderImage + fillStr + repeatStr);
     }
+    function updateSVG()
+    {
+        if (validImage) {
+            var elW = cssEl.width(),
+            elH = cssEl.height(),
+            imgW = naturalSize.width,
+            imgH = naturalSize.height,
 
-    fillEl.change(function() {
-        state.fill = this.checked;
-        updateCSS();
-        updateHash();
-    });
+            // The image cannot be referenced as a URL directly in the SVG because IE9 throws a strange
+            // security exception (perhaps due to cross-origin policy within data URIs?) Therefore we
+            // work around this by converting the image data into a data URI itself using a transient
+            // canvas. This unfortunately requires the border-image src to be within the same domain,
+            // which isn't a limitation in true border-image, so we need to try and find a better fix.
+            imgSrc = state.hash,
 
-    sliders.slider({
-        max: 100,
-        slide: function(event, ui) {
-            var map = sliderMap[event.target.id];
-            state[map.array][map.index] = ui.value;
+            REPEAT = 'repeat',
+            STRETCH = 'stretch',
+            ROUND = 'round',
+            ceil = Math.ceil,
 
-            updateCSS();
-            updateDividers();
-        },
-        stop: function() {
-            updateHash();
+            // zero = PIE.getLength( '0' ),
+            // widths = props.widths || ( borderProps ? borderProps.widths : { 't': zero, 'r': zero, 'b': zero, 'l': zero } ),
+            widthT = state.borderWidth[0],
+            widthR = state.borderWidth[1],
+            widthB = state.borderWidth[2],
+            widthL = state.borderWidth[3],
+            // slices = props.slice,
+            sliceT = state.imageOffset[0],
+            sliceR = state.imageOffset[1],
+            sliceB = state.imageOffset[2],
+            sliceL = state.imageOffset[3],
+            centerW = elW - widthL - widthR,
+            middleH = elH - widthT - widthB,
+            imgCenterW = imgW - sliceL - sliceR,
+            imgMiddleH = imgH - sliceT - sliceB,
+
+            // Determine the size of each tile - 'round' is handled below
+            tileSizeT = state.repeat[0] === STRETCH ? centerW : imgCenterW * widthT / sliceT,
+            tileSizeR = state.repeat[1] === STRETCH ? middleH : imgMiddleH * widthR / sliceR,
+            tileSizeB = state.repeat[0] === STRETCH ? centerW : imgCenterW * widthB / sliceB,
+            tileSizeL = state.repeat[1] === STRETCH ? middleH : imgMiddleH * widthL / sliceL,
+
+            svg,
+            patterns = [],
+            rects = [],
+            i = 0;
+
+            // For 'round', subtract from each tile's size enough so that they fill the space a whole number of times
+            if (state.repeat[0] === ROUND) {
+                tileSizeT -= (tileSizeT - (centerW % tileSizeT || tileSizeT)) / ceil(centerW / tileSizeT);
+                tileSizeB -= (tileSizeB - (centerW % tileSizeB || tileSizeB)) / ceil(centerW / tileSizeB);
+            }
+            if (state.repeat[1] === ROUND) {
+                tileSizeR -= (tileSizeR - (middleH % tileSizeR || tileSizeR)) / ceil(middleH / tileSizeR);
+                tileSizeL -= (tileSizeL - (middleH % tileSizeL || tileSizeL)) / ceil(middleH / tileSizeL);
+            }
+
+
+            // Build the SVG for the border-image rendering. Add each piece as a pattern, which is then stretched
+            // or repeated as the fill of a rect of appropriate size.
+            svg = [
+            '<svg width="' + elW + '" height="' + elH + '" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+            ];
+
+            function addImage( x, y, w, h, cropX, cropY, cropW, cropH, tileW, tileH ) {
+                patterns.push(
+                    '<pattern patternUnits="userSpaceOnUse" id="pattern' + i + '" ' +
+                    'x="' + (state.repeat[0] === REPEAT ? x + w / 2 - tileW / 2 : x) + '" ' +
+                    'y="' + (state.repeat[1] === REPEAT ? y + h / 2 - tileH / 2 : y) + '" ' +
+                    'width="' + tileW + '" height="' + tileH + '">' +
+                    '<svg width="' + tileW + '" height="' + tileH + '" viewBox="' + cropX + ' ' + cropY + ' ' + cropW + ' ' + cropH + '" preserveAspectRatio="none">' +
+                    '<image xlink:href="' + imgSrc + '" x="0" y="0" width="' + imgW + '" height="' + imgH + '" />' +
+                    '</svg>' +
+                    '</pattern>'
+                    );
+                rects.push(
+                    '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" fill="url(#pattern' + i + ')" />'
+                    );
+                i++;
+            }
+                addImage( 0, 0, widthL, widthT, 0, 0, sliceL, sliceT, widthL, widthT ); // top left
+                addImage( widthL, 0, centerW, widthT, sliceL, 0, imgCenterW, sliceT, tileSizeT, widthT ); // top center
+                addImage( elW - widthR, 0, widthR, widthT, imgW - sliceR, 0, sliceR, sliceT, widthR, widthT ); // top right
+                addImage( 0, widthT, widthL, middleH, 0, sliceT, sliceL, imgMiddleH, widthL, tileSizeL ); // middle left
+                if ( state.fill ) { // center fill
+                    addImage( widthL, widthT, centerW, middleH, sliceL, sliceT, imgCenterW, imgMiddleH, 
+                      tileSizeT || tileSizeB || imgCenterW, tileSizeL || tileSizeR || imgMiddleH );
+                }
+                addImage( elW - widthR, widthT, widthR, middleH, imgW - sliceR, sliceT, sliceR, imgMiddleH, widthR, tileSizeR ); // middle right
+                addImage( 0, elH - widthB, widthL, widthB, 0, imgH - sliceB, sliceL, sliceB, widthL, widthB ); // bottom left
+                addImage( widthL, elH - widthB, centerW, widthB, sliceL, imgH - sliceB, imgCenterW, sliceB, tileSizeB, widthB ); // bottom center
+                addImage( elW - widthR, elH - widthB, widthR, widthB, imgW - sliceR, imgH - sliceB, sliceR, sliceB, widthR, widthB ); // bottom right
+
+                svg.push(
+                    '<defs>' +
+                    patterns.join('\n') +
+                    '</defs>' +
+                    rects.join('\n') +
+                    '</svg>'
+                    );
+                $('#svgEl').html(svg.join( '' ));
+            }
+
         }
-    });
-    dividers.draggable({
-        containment: "parent",
-        drag: function(event, ui) {
-            dividerMap[event.target.id].setValue(event.target);
+        fillEl.change(function() {
+            state.fill = this.checked;
             updateCSS();
-            updateSliders();
-        },
-        stop: function() {
+            updateSVG();
             updateHash();
-        }
-    });
-    dividers.filter(":even").draggable("option", "axis", "y");
-    dividers.filter(":odd").draggable("option", "axis", "x");
+        });
 
-    repeat.change(function() {
-        var map = repeatMap[this.id];
-        state.repeat[map.index] = $(this).val();
-        updateCSS();
-        updateHash();
-    });
+        sliders.slider({
+            max: 100,
+            slide: function(event, ui) {
+                var map = sliderMap[event.target.id];
+                state[map.array][map.index] = ui.value;
 
-    UserImageCache.setImageEl(imageEl[0]);
-    imageEl.load(function() {
-        var img = this,
+                updateCSS();
+                updateSVG();
+                updateDividers();
+            },
+            stop: function() {
+                updateHash();
+            }
+        });
+        dividers.draggable({
+            containment: "parent",
+            drag: function(event, ui) {
+                dividerMap[event.target.id].setValue(event.target);
+                updateCSS();
+                updateSVG();
+                updateSliders();
+            },
+            stop: function() {
+                updateHash();
+            }
+        });
+        dividers.filter(":even").draggable("option", "axis", "y");
+        dividers.filter(":odd").draggable("option", "axis", "x");
+
+        repeat.change(function() {
+            var map = repeatMap[this.id];
+            state.repeat[map.index] = $(this).val();
+            updateCSS();
+            updateSVG();
+            updateHash();
+        });
+
+        UserImageCache.setImageEl(imageEl[0]);
+        imageEl.load(function() {
+            var img = this,
             natWidth = img.naturalWidth || img.width,
             natHeight = img.naturalHeight || img.height,
             width = natWidth*state.scaleFactor,
@@ -195,29 +304,37 @@ $(document).ready(function() {
         state.src = UserImageCache.getEntryId();
         pathToImage.val(UserImageCache.getDisplayName());
 
+        state.hash = this.src;
+
         editorEl.width(width).height(height);
         editorEl.show();
 
         $(".errorMsg").hide();
         validImage = true;
 
+        // svg
+
+
+
+
         sliders.filter(":odd").slider("option", "max", natWidth);
         sliders.filter(":even").slider("option", "max", natHeight);
         updateSliders();
         updateDividers();
         updateCSS();
+        updateSVG();
         updateHash();
     });
 
-    function errorHandler(code) {
-        var msg;
-        if (code === FileError.NOT_FOUND_ERR) {
-            msg = "Unable to find image. This may be due to an incorrect path name or a local file that has not been properly loaded.";
-        } else if (code) {
-            msg = "Failed to load image. Error code: " + code;
-        } else {
-            msg = "Unknown error occured loading image " + UserImageCache.getDisplayName();
-        }
+function errorHandler(code) {
+    var msg;
+    if (code === FileError.NOT_FOUND_ERR) {
+        msg = "Unable to find image. This may be due to an incorrect path name or a local file that has not been properly loaded.";
+    } else if (code) {
+        msg = "Failed to load image. Error code: " + code;
+    } else {
+        msg = "Unknown error occured loading image " + UserImageCache.getDisplayName();
+    }
 
         // Only show the message if the user as attempted to load an image
         if (UserImageCache.getEntryId()) {
@@ -228,6 +345,7 @@ $(document).ready(function() {
         validImage = false;
 
         updateCSS();
+        updateSVG();
     }
     imageEl.error(function() { errorHandler(); });
     pathToImage.change(function(event) {
@@ -240,6 +358,7 @@ $(document).ready(function() {
         return function() {
             state[name] = value;
             updateCSS();
+            updateSVG();
             updateHash();
         };
     }
@@ -256,6 +375,7 @@ $(document).ready(function() {
             updateSliders();
             updateDividers();
             updateCSS();
+            updateSVG();
         },
         stop: function() {
             updateHash();
@@ -272,7 +392,7 @@ $(document).ready(function() {
             event.preventDefault();
             event.stopPropagation();
             var dataTransfer = event.originalEvent.dataTransfer,
-                file = dataTransfer.files[0];
+            file = dataTransfer.files[0];
 
             UserImageCache.load(file, errorHandler);
         });
@@ -309,6 +429,7 @@ $(document).ready(function() {
             updateSliders();
             updateDividers();
             updateCSS();
+            updateSVG();
         }
 
         updateRepeat();
